@@ -2267,7 +2267,8 @@ static const char *status_replies[] = {
 	"Locally Removed",
 	"File had conflicts on merge",
 	"Locally Modified",
-	"Needs Merge"
+	"Needs Merge",
+	"Entry Invalid"
 };
 
 enum cvs_status
@@ -2282,6 +2283,7 @@ enum cvs_status
 	STAT_FILE_HAD_CONFLICTS_ON_MERGE,
 	STAT_LOCALLY_MODIFIED,
 	STAT_NEEDS_MERGE,
+	STAT_ENTRY_INVALID,
 	STAT_UNKNOWN
 };
 
@@ -2380,7 +2382,17 @@ M    Repository revision:\t1.2\t/home/dummy/tmp/moo/cvs_repo/mod/src/somedir/Att
 M    Sticky Tag:\t\t(none)
 M    Sticky Date:\t\t(none)
 M    Sticky Options:\t(none)
-M 
+M
+cvs status: `src/remove_me' is no longer in the repository
+===================================================================
+File: remove_me        	Status: Entry Invalid
+
+   Working revision:	1.1	2014-03-24 16:02:25 +0100
+   Repository revision:	1.2	/home/dummy/tmp/moo/cvs_repo/mod/src/Attic/remove_me,v
+   Commit Identifier:	(none)
+   Sticky Tag:		(none)
+   Sticky Date:		(none)
+   Sticky Options:	(none)
 */
 			switch (state) {
 			case NEED_START_STATUS:
@@ -2469,11 +2481,18 @@ M
 							rc = 1;
 						}
 						break;
+					/*
+					 * STAT_ENTRY_INVALID is reported when file is removed.
+					 */
+					case STAT_ENTRY_INVALID:
+						file->isdead = 1;
+						/* fall through */
 					default:
 						rc = 1;
 					}
 					file->handled = 1;
 					state = NEED_START_STATUS;
+					strbuf_copy(&file->revision, &remote_rev);
 				}
 				break;
 			}
@@ -2754,7 +2773,7 @@ enum
 	NEED_DONE		= 2
 };
 
-static int parse_cvs_checkin_reply(struct cvs_transport *cvs, struct cvsfile *files, int count)
+static int parse_cvs_checkin_reply(struct cvs_transport *cvs, const char *cvs_branch, struct cvsfile *files, int count)
 {
 	struct strbuf line = STRBUF_INIT;
 	struct strbuf buf = STRBUF_INIT;
@@ -2858,7 +2877,17 @@ CVS   19 <- /DCE.cpp/1.6//-kk/\0a
 
 					if (!strcmp(new_rev.buf, "delete")) {
 						strbuf_copy(&new_rev, &old_rev);
-						inc_revision(&new_rev);
+						/*
+						 * cvs server does not tell new revision if file is
+						 * deleted, but for HEAD it is straight forward, just
+						 * minor version increase. For branches it is tricky
+						 * and if file was unchanged since branch fork, the
+						 * revision will change dramatically and hard to
+						 * guess. So, old revision is left here, and later
+						 * filled in with extra cvs status call.
+						 */
+						if (!strcmp(cvs_branch, "HEAD"))
+							inc_revision(&new_rev);
 					}
 				}
 				else if (strbuf_gettext_after(&line, "initial revision: ", &new_rev)) {
@@ -2874,7 +2903,7 @@ CVS   19 <- /DCE.cpp/1.6//-kk/\0a
 				if (!file)
 					die("Checkin file info found for not requested file: %s", path.buf);
 				else if (strcmp(file->revision.buf, old_rev.buf) && !file->isnew) {
-					die("Checkin file %s old revision %s, but %s is reported",
+					error("Checkin file %s old revision %s, but %s is reported",
 					      path.buf, file->revision.buf, old_rev.buf);
 					strbuf_copy(&file->revision, &new_rev);
 				}
@@ -2962,6 +2991,65 @@ CVS   19 <- /DCE.cpp/1.6//-kk/\0a
 	return rc;
 }
 
+extern int is_prev_rev(const char *rev1, const char *rev2);
+int cvs_get_deleted_files_revisions(struct cvs_transport *cvs, const char *cvs_branch, struct cvsfile *allfiles, int count)
+{
+	struct cvsfile *files;
+	struct cvsfile *file_it;
+	int deleted_count = 0;
+	int rc;
+	int i;
+
+	for (file_it = allfiles; file_it < allfiles + count; file_it++) {
+		if (file_it->isdead)
+			deleted_count++;
+	}
+
+	files = xcalloc(deleted_count, sizeof(*files));
+	for (file_it = allfiles, i = 0; file_it < allfiles + count; file_it++) {
+		if (!file_it->isdead)
+			continue;
+
+		cvsfile_init(&files[i]);
+		strbuf_addbuf(&files[i].path, &file_it->path);
+		strbuf_addbuf(&files[i].revision, &file_it->revision);
+		//files[i].isdead = file_it->isdead;
+
+		tracef("status: %s rev: %s isdead: %u",
+			files[i].path.buf, files[i].revision.buf, files[i].isdead);
+		i++;
+	}
+
+	rc = cvs_status(cvs, cvs_branch, files, deleted_count);
+	if (rc == -1 || rc == 0) {
+		error("cvs commit succeded, but cannot update metadata, due to failed cvs status on deleted files");
+		rc = -1;
+	}
+	else {
+		rc = 0;
+		for (file_it = allfiles, i = 0; file_it < allfiles + count; file_it++) {
+			if (!file_it->isdead)
+				continue;
+
+			tracef("status for deleted file: %s rev: %s newrev: %s",
+				files[i].path.buf, file_it->revision.buf, files[i].revision.buf);
+
+			if (!is_prev_rev(file_it->revision.buf, files[i].revision.buf)) {
+				error("status for deleted file: %s rev: %s newrev: %s not sequential",
+					files[i].path.buf, file_it->revision.buf, files[i].revision.buf);
+				rc = -1;
+			}
+			strbuf_copy(&file_it->revision, &files[i].revision);
+			i++;
+		}
+	}
+
+	for (i = 0; i < deleted_count; i++)
+		cvsfile_release(&files[i]);
+	free(files);
+	return rc;
+}
+
 int cvs_checkin(struct cvs_transport *cvs, const char *cvs_branch, const char *message,
 			struct cvsfile *files, int count,
 			prepare_file_content_fn_t prepare_file_cb,
@@ -3027,6 +3115,7 @@ ci\n
 	struct strbuf dir_sb = STRBUF_INIT;
 	struct strbuf **lines, **it;
 	int sticky;
+	int has_file_removes = 0;
 	const char *dir;
 	ssize_t ret;
 
@@ -3097,6 +3186,7 @@ ci\n
 					file_it->revision.buf,
 					sticky ? "T" : "",
 					sticky ? cvs_branch : "");
+			has_file_removes = 1;
 		}
 		release_file_cb(file_it, data);
 		file_it++;
@@ -3121,14 +3211,23 @@ ci\n
 	}
 
 	ret = cvs_write(cvs, WR_FLUSH, "ci\n");
-
 	if (ret == -1)
-		die("cvs status failed");
+		die("Cannot send checkin command");
 
 	strbuf_release(&file_basename_sb);
 	strbuf_release(&dir_repo_relative_sb);
 	strbuf_release(&dir_sb);
-	return parse_cvs_checkin_reply(cvs, files, count);
+
+	ret = parse_cvs_checkin_reply(cvs, cvs_branch, files, count);
+	if (ret) {
+		error("parse_cvs_checkin_reply failed");
+		return ret;
+	}
+
+	if (strcmp(cvs_branch, "HEAD") && has_file_removes)
+		ret = cvs_get_deleted_files_revisions(cvs, cvs_branch, files, count);
+
+	return ret;
 }
 
 char *cvs_get_rev_branch(struct cvs_transport *cvs, const char *file, const char *revision)
