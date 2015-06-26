@@ -113,9 +113,9 @@ static struct string_list cvs_branch_list = STRING_LIST_INIT_DUP;
 static struct string_list cvs_tag_list = STRING_LIST_INIT_DUP;
 static struct string_list *import_branch_list = NULL;
 static struct dir_struct *exclude_dir = NULL;
-static struct dir_struct *looseblob_dir = NULL;
-static const char *looseblob_tag_ref_prefix = "refs/loose-blobs/";
-static struct strbuf looseblob_gitattr_sb = STRBUF_INIT;
+static struct dir_struct *lfsblob_dir = NULL;
+static const char *lfsblob_tag_ref_prefix = "refs/lfs-blobs/";
+static struct strbuf lfsblob_gitattr_sb = STRBUF_INIT;
 
 static const char import_commit_edit[] = "IMPORT_COMMIT_EDIT";
 static const char export_commit_edit[] = "EXPORT_COMMIT_EDIT";
@@ -311,62 +311,166 @@ static int is_cvs_import_excluded_path(const char *path)
 	return is_excluded(exclude_dir, path, &dtype);
 }
 
-static int *make_looseblob_gitattr_filter()
+static int *make_lfsblob_gitattr_filter()
 {
 	int exfile;
-	for (exfile = 0; exfile < looseblob_dir->exclude_list_group[EXC_FILE].nr; exfile++) {
-		struct exclude_list *el = &looseblob_dir->exclude_list_group[2].el[exfile];
+	for (exfile = 0; exfile < lfsblob_dir->exclude_list_group[EXC_FILE].nr; exfile++) {
+		struct exclude_list *el = &lfsblob_dir->exclude_list_group[2].el[exfile];
 		int ptrn;
 		for (ptrn = 0; ptrn < el->nr; ptrn++)
-			strbuf_addf(&looseblob_gitattr_sb,
-					"%s\tfilter=loose-blob\n",
+			strbuf_addf(&lfsblob_gitattr_sb,
+					"%s filter=lfs diff=lfs merge=lfs -crlf\n",
 					el->excludes[ptrn]->pattern);
 	}
 
 	return 0;
 }
 
-static void init_cvs_looseblob_filter()
+static void init_cvs_lfsblob_filter()
 {
-	const char *cvs_looseblob_path;
+	const char *cvs_lfsblob_path;
 
-	if (looseblob_dir)
+	if (lfsblob_dir)
 		return;
 
-	looseblob_dir = xcalloc(1, sizeof(*looseblob_dir));
+	lfsblob_dir = xcalloc(1, sizeof(*lfsblob_dir));
 
-	cvs_looseblob_path = git_path("info/cvs-looseblob");
-	if (!access_or_warn(cvs_looseblob_path, R_OK, 0))
-		add_excludes_from_file(looseblob_dir, cvs_looseblob_path);
+	cvs_lfsblob_path = git_path("info/cvs-lfsblob");
+	if (!access_or_warn(cvs_lfsblob_path, R_OK, 0))
+		add_excludes_from_file(lfsblob_dir, cvs_lfsblob_path);
 
-	cvs_looseblob_path = getenv("GIT_CVS_IMPORT_LOOSEBLOB");
-	if (cvs_looseblob_path) {
-		if (access(cvs_looseblob_path, R_OK))
-			die("cannot access %s specified as GIT_CVS_IMPORT_LOOSEBLOB",
-			    cvs_looseblob_path);
-		add_excludes_from_file(looseblob_dir, cvs_looseblob_path);
+	cvs_lfsblob_path = getenv("GIT_CVS_IMPORT_LFS_FILTER");
+	if (cvs_lfsblob_path) {
+		if (access(cvs_lfsblob_path, R_OK))
+			die("cannot access %s specified as GIT_CVS_IMPORT_LFS_FILTER",
+			    cvs_lfsblob_path);
+		add_excludes_from_file(lfsblob_dir, cvs_lfsblob_path);
 	}
 
-	make_looseblob_gitattr_filter();
+	make_lfsblob_gitattr_filter();
 }
 
-static void free_cvs_looseblob_filter()
+static void free_cvs_lfsblob_filter()
 {
-	if (!looseblob_dir)
+	if (!lfsblob_dir)
 		return;
 
-	clear_directory(looseblob_dir);
-	free(looseblob_dir);
+	clear_directory(lfsblob_dir);
+	free(lfsblob_dir);
 }
 
-static int is_cvs_looseblob_path(const char *path)
+static int is_cvs_lfsblob_path(const char *path)
 {
 	int dtype = DT_UNKNOWN;
 
-	if (!looseblob_dir)
-		init_cvs_looseblob_filter();
+	if (!lfsblob_dir)
+		init_cvs_lfsblob_filter();
 
-	return is_excluded(looseblob_dir, path, &dtype);
+	return is_excluded(lfsblob_dir, path, &dtype);
+}
+
+char *sha256_to_hex(const unsigned char *sha256)
+{
+	static int bufno;
+	static char hexbuffer[4][git_SHA256_DIGEST_LENGTH * 2 + 1];
+	static const char hex[] = "0123456789abcdef";
+	char *buffer = hexbuffer[3 & ++bufno], *buf = buffer;
+	int i;
+
+	for (i = 0; i < git_SHA256_DIGEST_LENGTH; i++) {
+		unsigned int val = *sha256++;
+		*buf++ = hex[val >> 4];
+		*buf++ = hex[val & 0xf];
+	}
+	*buf = '\0';
+
+	return buffer;
+}
+
+/*
+ * git lfs client has a bug, it tries to minic git concept but actually creates
+ * files with full sha256 name, despite using first 2 bytes as directries
+ */
+char *get_lfs_blob_path_client(const unsigned char *sha256)
+{
+	return git_path("lfs/objects/%02hhx/%02hhx/%s", sha256[0], sha256[1], sha256_to_hex(sha256)/* + 4*/);
+}
+
+char *get_lfs_blob_path_server(const unsigned char *sha256)
+{
+	return git_path("lfs/server/%02hhx/%02hhx/%s", sha256[0], sha256[1], sha256_to_hex(sha256) + 4);
+}
+
+static inline void sha256hashcpy(unsigned char *sha_dst, const unsigned char *sha_src)
+{
+	memcpy(sha_dst, sha_src, git_SHA256_DIGEST_LENGTH);
+}
+
+void sha256_buf(const void *buf, unsigned long len, unsigned char *returnsha256)
+{
+	git_SHA256_CTX sha256;
+	git_SHA256_Init(&sha256);
+	git_SHA256_Update(&sha256, buf, len);
+	git_SHA256_Final(returnsha256, &sha256);
+}
+
+int has_sha256_lfs_file(const unsigned char *sha256)
+{
+	struct stat st;
+	if (stat(get_lfs_blob_path_client(sha256), &st))
+		return 0;
+	return 1;
+}
+
+static void create_directories(const char *path)
+{
+	int path_len = strlen(path);
+	char *buf = xmalloc(path_len + 1);
+	int len = 0;
+
+	while (len < path_len) {
+		do {
+			buf[len] = path[len];
+			len++;
+		} while (len < path_len && path[len] != '/');
+		if (len >= path_len)
+			break;
+		buf[len] = 0;
+
+		if (mkdir(buf, 0777)) {
+			if (errno == EEXIST)
+				continue;
+			die_errno("cannot create directory at '%s'", buf);
+		}
+	}
+	free(buf);
+}
+
+int store_lfs_blob_file(const void *buf, unsigned long len, unsigned char *sha256)
+{
+	char *path = get_lfs_blob_path_client(sha256);
+	int fd;
+
+	create_directories(path);
+	fd = open(path, O_CREAT | O_WRONLY, 0666);
+	if (fd < 0)
+		die (_("Could not open '%s' for writing."), path);
+
+	// create hard link for easy importing of lfs blobs to server
+	char *servpath = get_lfs_blob_path_server(sha256);
+	create_directories(servpath);
+	link(path, servpath);
+
+	return write_in_full(fd, buf, len) == len ? 0 : 1;
+}
+
+int write_sha256_lfs_file(const void *buf, unsigned long len, unsigned char *sha256)
+{
+	sha256_buf(buf, len, sha256);
+	if (has_sha256_lfs_file(sha256))
+		return 0;
+
+	return store_lfs_blob_file(buf, len, sha256);
 }
 
 static const char *get_import_time_estimation()
@@ -427,7 +531,7 @@ static int fast_export_blob(void *buf, size_t size)
 static int fast_export_revision_cb(void *ptr, void *data)
 {
 	struct cvs_revision *rev = ptr;
-	struct string_list *looseblob_list = data;
+	struct string_list *lfsblob_list = data;
 
 	if (rev->isdead) {
 		helper_printf("D %s\n", rev->path);
@@ -437,19 +541,36 @@ static int fast_export_revision_cb(void *ptr, void *data)
 	if (!rev->mark)
 		die("No mark during fast_export_revision_by_mark");
 
-	if (is_cvs_looseblob_path(rev->path)) {
-		struct strbuf looseblob_sb = STRBUF_INIT;
+	if (is_cvs_lfsblob_path(rev->path)) {
+		struct strbuf lfsblob_sb = STRBUF_INIT;
+		/*
+		 * FIXME: cache and do not read object from git to generate lfs pointer
+		 */
+		unsigned long size;
+		enum object_type type;
+		void *buf;
+		unsigned char sha256[git_SHA256_DIGEST_LENGTH];
+		unsigned char sha1[20];
 
 		if (rev->mark[0] == ':')
 			die("fast_export_revision: mark for loose-blob is not sha1");
 
-		strbuf_addf(&looseblob_sb, "loose-blob %s\n", rev->mark);
+		get_sha1_hex(rev->mark, sha1);
+		buf = read_sha1_file(sha1, &type, &size);
+		if (!buf)
+			die("fast_export_revision: cannot read git lfs object by sha1: %s", rev->mark);
+		sha256_buf(buf, size, sha256);
+
+		strbuf_addf(&lfsblob_sb, "version https://git-lfs.github.com/spec/v1\n"
+								"oid sha256:%s\n"
+								"size %lu\n",
+								sha256_to_hex(sha256), size);
 		helper_printf("M 100%.3o inline %s\n", rev->isexec ? 0755 : 0644, rev->path);
-		helper_printf("data %zu\n", looseblob_sb.len);
-		helper_write(looseblob_sb.buf, looseblob_sb.len);
+		helper_printf("data %zu\n", lfsblob_sb.len);
+		helper_write(lfsblob_sb.buf, lfsblob_sb.len);
 		helper_printf("\n");
-		strbuf_release(&looseblob_sb);
-		string_list_append(looseblob_list, rev->mark);
+		strbuf_release(&lfsblob_sb);
+		string_list_append(lfsblob_list, rev->mark);
 	}
 	else {
 		helper_printf("M 100%.3o %s %s\n", rev->isexec ? 0755 : 0644, rev->mark, rev->path);
@@ -523,12 +644,16 @@ static int fetch_revision_cb(void *ptr, void *data)
 		tracef(" mode %.3o size %zu", file.mode, file.file.len);
 
 	rev->isexec = file.isexec;
-	if (is_cvs_looseblob_path(rev->path)) {
+	if (is_cvs_lfsblob_path(rev->path)) {
 		unsigned char sha1[20];
+		unsigned char sha256[git_SHA256_DIGEST_LENGTH];
 		//fast_export_blob(file.file.buf, file.file.len);
 		//hash_sha1_file(file.file.buf, file.file.len, blob_type, sha1);
 		write_sha1_file(file.file.buf, file.file.len, blob_type, sha1);
 		strbuf_addf(&mark_sb, "%s", sha1_to_hex(sha1));
+
+		write_sha256_lfs_file(file.file.buf, file.file.len, sha256);
+		tracef("written as git lfs file: %s %s - %s", rev->path, rev->revision, sha256_to_hex(sha256));
 	}
 	else {
 		strbuf_addf(&mark_sb, ":%d", fast_export_blob(file.file.buf, file.file.len));
@@ -545,7 +670,7 @@ static int cache_revision_cb(void *ptr, void *data)
 	if (rev->isdead)
 		return 0;
 
-	if (is_cvs_looseblob_path(rev->path)) {
+	if (is_cvs_lfsblob_path(rev->path)) {
 		if (rev->mark[0] == ':')
 			die("cache_revision: mark for loose-blob is not sha1");
 		add_revision_cache_entry(rev->path, rev->revision, rev->isexec, rev->mark);
@@ -568,33 +693,33 @@ static int cache_revision_cb(void *ptr, void *data)
 	return 0;
 }
 
-static int fast_export_looseblob_tag(struct string_list_item *li, void *date)
+static int fast_export_lfsblob_tag(struct string_list_item *li, void *date)
 {
 	unsigned char sha1[20];
-	struct strbuf looseblob_tag_ref_sb = STRBUF_INIT;
+	struct strbuf lfsblob_tag_ref_sb = STRBUF_INIT;
 
-	strbuf_addf(&looseblob_tag_ref_sb, "%s%s", looseblob_tag_ref_prefix, li->string);
+	strbuf_addf(&lfsblob_tag_ref_sb, "%s%s", lfsblob_tag_ref_prefix, li->string);
 	get_sha1_hex(li->string, sha1);
 
-	update_ref("tagging loose-blob", looseblob_tag_ref_sb.buf, sha1, NULL, 0, DIE_ON_ERR);
+	update_ref("tagging lfs blob", lfsblob_tag_ref_sb.buf, sha1, NULL, 0, DIE_ON_ERR);
 	/*
 	 * fast-import does not support blobs tagging
 	 *
-	helper_printf("reset %s%s\n", looseblob_tag_ref_prefix, li->string);
+	helper_printf("reset %s%s\n", lfsblob_tag_ref_prefix, li->string);
 	helper_printf("from %s\n", li->string);
 	 */
-	strbuf_release(&looseblob_tag_ref_sb);
+	strbuf_release(&lfsblob_tag_ref_sb);
 	return 0;
 }
 
-static int fast_export_looseblob_gitattributes_filter()
+static int fast_export_lfsblob_gitattributes_filter()
 {
-	if (!looseblob_gitattr_sb.len)
+	if (!lfsblob_gitattr_sb.len)
 		return 0;
 
 	helper_printf("M 100644 inline .gitattributes\n");
-	helper_printf("data %zu\n", looseblob_gitattr_sb.len);
-	helper_write(looseblob_gitattr_sb.buf, looseblob_gitattr_sb.len);
+	helper_printf("data %zu\n", lfsblob_gitattr_sb.len);
+	helper_write(lfsblob_gitattr_sb.buf, lfsblob_gitattr_sb.len);
 	return 0;
 }
 
@@ -647,7 +772,7 @@ static int fast_export_cvs_commit(const char *branch_name, struct cvs_commit *ps
 	struct strbuf author_sb = STRBUF_INIT;
 	struct strbuf committer_sb = STRBUF_INIT;
 	struct strbuf commit_msg_sb = STRBUF_INIT;
-	struct string_list looseblob_list = STRING_LIST_INIT_NODUP;
+	struct string_list lfsblob_list = STRING_LIST_INIT_NODUP;
 
 	/*
 	'commit' SP <ref> LF
@@ -690,14 +815,14 @@ static int fast_export_cvs_commit(const char *branch_name, struct cvs_commit *ps
 
 	if (parent_mark)
 		helper_printf("from %s\n", parent_mark);
-	for_each_hash(ps->revision_hash, fast_export_revision_cb, &looseblob_list);
-	if (looseblob_list.nr)
-		fast_export_looseblob_gitattributes_filter();
+	for_each_hash(ps->revision_hash, fast_export_revision_cb, &lfsblob_list);
+	if (lfsblob_list.nr)
+		fast_export_lfsblob_gitattributes_filter();
 	for_each_hash(ps->revision_hash, cache_revision_cb, NULL);
-	for_each_string_list(&looseblob_list, fast_export_looseblob_tag, NULL);
+	for_each_string_list(&lfsblob_list, fast_export_lfsblob_tag, NULL);
 	helper_flush();
 
-	string_list_clear(&looseblob_list, 0);
+	string_list_clear(&lfsblob_list, 0);
 	strbuf_release(&author_sb);
 	strbuf_release(&committer_sb);
 	strbuf_release(&commit_msg_sb);
@@ -1055,7 +1180,7 @@ static int fast_export_branch_initial(const char *branch_name,
 					const char *parent_commit_mark,
 					const char *parent_branch_name)
 {
-	struct string_list looseblob_list = STRING_LIST_INIT_NODUP;
+	struct string_list lfsblob_list = STRING_LIST_INIT_NODUP;
 	for_each_hash(meta_revision_hash, fetch_revision_cb, NULL);
 
 	markid++;
@@ -1073,14 +1198,14 @@ static int fast_export_branch_initial(const char *branch_name,
 		helper_printf("from %s\n", parent_commit_mark);
 		helper_printf("deleteall\n");
 	}
-	for_each_hash(meta_revision_hash, fast_export_revision_cb, &looseblob_list);
-	if (looseblob_list.nr)
-		fast_export_looseblob_gitattributes_filter();
+	for_each_hash(meta_revision_hash, fast_export_revision_cb, &lfsblob_list);
+	if (lfsblob_list.nr)
+		fast_export_lfsblob_gitattributes_filter();
 	for_each_hash(meta_revision_hash, cache_revision_cb, NULL);
-	for_each_string_list(&looseblob_list, fast_export_looseblob_tag, NULL);
+	for_each_string_list(&lfsblob_list, fast_export_lfsblob_tag, NULL);
 	helper_flush();
 
-	string_list_clear(&looseblob_list, 0);
+	string_list_clear(&lfsblob_list, 0);
 	return markid;
 }
 
@@ -2682,7 +2807,7 @@ int main(int argc, const char **argv)
 
 	cvs_authors_store();
 	free_cvs_import_exclude();
-	free_cvs_looseblob_filter();
+	free_cvs_lfsblob_filter();
 	strbuf_release(&buf);
 	return 0;
 }

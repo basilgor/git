@@ -15,6 +15,13 @@
 #define git_SHA1_Update	SHA1_Update
 #define git_SHA1_Final	SHA1_Final
 #endif
+#ifndef git_SHA256_CTX
+#define git_SHA256_CTX				SHA256_CTX
+#define git_SHA256_DIGEST_LENGTH	SHA256_DIGEST_LENGTH
+#define git_SHA256_Init				SHA256_Init
+#define git_SHA256_Update			SHA256_Update
+#define git_SHA256_Final			SHA256_Final
+#endif
 
 #include <zlib.h>
 typedef struct git_zstream {

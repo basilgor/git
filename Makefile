@@ -349,8 +349,10 @@ GIT-VERSION-FILE: FORCE
 
 # CFLAGS and LDFLAGS are for the users to override from the command line.
 
-CFLAGS = -g -O2 -Wall
-LDFLAGS = -ldb
+#CFLAGS = -g -O2 -Wall
+#LDFLAGS = -ldb
+CFLAGS = -g3 -O0 -Wall -fsanitize=address
+LDFLAGS = -ldb -ldl
 ALL_CFLAGS = $(CPPFLAGS) $(CFLAGS)
 ALL_LDFLAGS = $(LDFLAGS)
 STRIP ?= strip
