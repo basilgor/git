@@ -1173,6 +1173,143 @@ static const char *find_branch_fork_point(const char *parent_branch_name, time_t
 	return commit_ref;
 }
 
+/*const int maxrevlen = 32;
+
+int rev2array(const char *ver, int *arr, int *arrlen)
+{
+	const char *c = ver;
+	int len = 0;
+	int digit = 0;
+
+	while (true) {
+		switch (*c) {
+			case '\0':
+				arr[len++] = digit;
+				*arrlen = len;
+				return 0;
+			case '.':
+				arr[len++] = digit;
+				if (len >= maxrevlen)
+					return -1;
+				digit = 0;
+				break;
+			case '0':
+			case '1':
+			case '2':
+			case '3':
+			case '4':
+			case '5':
+			case '6':
+			case '7':
+			case '8':
+			case '9':
+				digit *= 10;
+				digit += *c - '0';
+				break;
+			default:
+				return -1;
+		}
+		c++;
+	}
+}
+
+int revcmp(const char *ver1, const char *ver2)
+{
+	if (!strcmp(ver1, ver2))
+		return 0;
+
+	int ver1arr[maxrevlen];
+	int ver1len;
+	int ver2arr[maxrevlen];
+	int ver2len;
+	int i;
+
+	rev2array(ver1, ver1arr, &ver1len);
+	rev2array(ver2, ver2arr, &ver2len);
+
+	int minlen = ver1len < ver2len ? ver1len : ver2len;
+	for (i = 0; i < minlen; i++) {
+		if (ver1arr[i] == ver2arr[i])
+			continue;
+		if (ver1arr[i] < ver2arr[i])
+			return -1;
+		if (ver1arr[i] > ver2arr[i])
+			return 1;
+	}
+
+	if (ver1len < ver2len)
+		return -1;
+	else
+		return 1;
+}
+
+
+static const char *fork_branch(const char *branch_name, const char *parent_branch_name, time_t time, struct hash_table *meta_revision_hash)
+{
+	unsigned char sha1[20];
+	struct commit *commit;
+	struct strbuf branch_ref = STRBUF_INIT;
+	struct strbuf cvs_branch_ref = STRBUF_INIT;
+	const char *commit_ref = NULL;
+	int rev_mismatches_min = INT_MAX;
+	int rev_mismatches;
+
+	save_commit_buffer = 0;
+	if (!time)
+		time = -1;
+
+	strbuf_addf(&branch_ref, "%s%s", get_private_ref_prefix(), parent_branch_name);
+	strbuf_addf(&cvs_branch_ref, "%s%s", get_meta_ref_prefix(), parent_branch_name);
+
+	if (get_sha1_commit(branch_ref.buf, sha1))
+		die("cannot find last commit on branch ref %s", branch_ref.buf);
+
+	commit = lookup_commit(sha1);
+
+	for (;;) {
+		if (parse_commit(commit))
+			die("cannot parse commit %s", sha1_to_hex(commit->object.sha1));
+		tracef("find_branch_fork_point: commit: %s date: %s commit: %p",
+			sha1_to_hex(commit->object.sha1), show_date(commit->date, 0, DATE_NORMAL), commit);
+
+		if (commit->date <= time) {
+			rev_mismatches = compare_commit_meta(commit->object.sha1, cvs_branch_ref.buf, meta_revision_hash);
+			tracef("rev_mismatches: %d", rev_mismatches);
+			if (rev_mismatches == -1) {
+				*
+				 * TODO: compare_commit_meta return -1 if no
+				 * metadata note available for commit. Is this
+				 * an error?
+				 * commit_ref = NULL;
+				 *
+				break;
+			}
+
+			if (!rev_mismatches) {
+				tracef("find_branch_fork_point - perfect match");
+				commit_ref = sha1_to_hex(commit->object.sha1);
+				break;
+			}
+
+			if (rev_mismatches_min < rev_mismatches)
+				break;
+
+			if (rev_mismatches_min > rev_mismatches) {
+				rev_mismatches_min = rev_mismatches;
+				commit_ref = sha1_to_hex(commit->object.sha1);
+			}
+		}
+
+		if (!commit->parents)
+			break;
+		commit = commit->parents->item;
+	}
+
+	strbuf_release(&branch_ref);
+	strbuf_release(&cvs_branch_ref);
+	return commit_ref;
+}*/
+
 static int fast_export_branch_initial(const char *branch_name,
 					int istag,
 					struct hash_table *meta_revision_hash,
