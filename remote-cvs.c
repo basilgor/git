@@ -449,6 +449,7 @@ static void create_directories(const char *path)
 int store_lfs_blob_file(const void *buf, unsigned long len, unsigned char *sha256)
 {
 	char *path = get_lfs_blob_path_client(sha256);
+	ssize_t written;
 	int fd;
 
 	create_directories(path);
@@ -461,7 +462,9 @@ int store_lfs_blob_file(const void *buf, unsigned long len, unsigned char *sha25
 	create_directories(servpath);
 	link(path, servpath);
 
-	return write_in_full(fd, buf, len) == len ? 0 : 1;
+	written = write_in_full(fd, buf, len);
+	close(fd);
+	return written == len ? 0 : 1;
 }
 
 int write_sha256_lfs_file(const void *buf, unsigned long len, unsigned char *sha256)
