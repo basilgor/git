@@ -508,6 +508,13 @@ char *revision_cache_lookup(const char *path, const char *revision, int *isexec)
 	if (!rev_ent)
 		return NULL;
 
+	if (strcmp(path, rev_ent->path) ||
+	    strcmp(revision, rev_ent->revision)) {
+		warning("revision_cache_lookup collision: '%s':'%s' vs '%s':'%s', fetching from cvs",
+				path, revision, rev_ent->path, rev_ent->revision);
+		return NULL;
+	}
+
 	if (get_sha1_hex(rev_ent->sha1_hex, sha1))
 		error("invalid sha1 hex cache lookup: '%s'", rev_ent->sha1_hex);
 
