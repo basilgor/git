@@ -1057,6 +1057,7 @@ static int find_longest_rev(void *ptr, void *data)
  */
 static char *find_parent_branch(const char *branch_name, struct hash_table *meta_revision_hash)
 {
+	char *parent_name;
 	struct find_rev_data find_rev_data = { NULL, 0 };
 	for_each_hash(meta_revision_hash, find_longest_rev, &find_rev_data);
 
@@ -1067,7 +1068,12 @@ static char *find_parent_branch(const char *branch_name, struct hash_table *meta
 	if (find_rev_data.dots == 1)
 		return xstrdup("HEAD");
 
-	return get_cvs_revision_branch(find_rev_data.file_meta);
+	parent_name = get_cvs_revision_branch(find_rev_data.file_meta);
+	if (!strcmp(parent_name, branch_name)) {
+		free(parent_name);
+		return xstrdup("HEAD");
+	}
+	return parent_name;
 }
 
 static int compare_commit_meta(unsigned char sha1[20], const char *meta_ref, struct hash_table *meta_revision_hash)
