@@ -700,7 +700,8 @@ static int fast_export_lfsblob_tag(struct string_list_item *li, void *date)
 	unsigned char sha1[20];
 	struct strbuf lfsblob_tag_ref_sb = STRBUF_INIT;
 
-	strbuf_addf(&lfsblob_tag_ref_sb, "%s%s", lfsblob_tag_ref_prefix, li->string);
+	strbuf_addf(&lfsblob_tag_ref_sb, "%s%c%c/%s", lfsblob_tag_ref_prefix,
+			li->string[0], li->string[1], li->string+2);
 	get_sha1_hex(li->string, sha1);
 
 	update_ref("tagging lfs blob", lfsblob_tag_ref_sb.buf, sha1, NULL, 0, DIE_ON_ERR);
