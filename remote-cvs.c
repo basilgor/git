@@ -562,7 +562,10 @@ static int fast_export_revision_cb(void *ptr, void *data)
 		buf = read_sha1_file(sha1, &type, &size);
 		if (!buf)
 			die("fast_export_revision: cannot read git lfs object by sha1: %s", rev->mark);
-		sha256_buf(buf, size, sha256);
+		// export
+		write_sha256_lfs_file(buf, size, sha256);
+		tracef("written as git lfs file: %s %s - %s", rev->path, rev->revision, sha256_to_hex(sha256));
+		free(buf);
 
 		strbuf_addf(&lfsblob_sb, "version https://git-lfs.github.com/spec/v1\n"
 								"oid sha256:%s\n"
@@ -649,14 +652,10 @@ static int fetch_revision_cb(void *ptr, void *data)
 	rev->isexec = file.isexec;
 	if (is_cvs_lfsblob_path(rev->path)) {
 		unsigned char sha1[20];
-		unsigned char sha256[git_SHA256_DIGEST_LENGTH];
 		//fast_export_blob(file.file.buf, file.file.len);
 		//hash_sha1_file(file.file.buf, file.file.len, blob_type, sha1);
 		write_sha1_file(file.file.buf, file.file.len, blob_type, sha1);
 		strbuf_addf(&mark_sb, "%s", sha1_to_hex(sha1));
-
-		write_sha256_lfs_file(file.file.buf, file.file.len, sha256);
-		tracef("written as git lfs file: %s %s - %s", rev->path, rev->revision, sha256_to_hex(sha256));
 	}
 	else {
 		strbuf_addf(&mark_sb, ":%d", fast_export_blob(file.file.buf, file.file.len));
