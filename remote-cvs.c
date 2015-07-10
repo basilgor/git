@@ -116,6 +116,7 @@ static struct dir_struct *exclude_dir = NULL;
 static struct dir_struct *lfsblob_dir = NULL;
 static const char *lfsblob_tag_ref_prefix = "refs/lfs-blobs/";
 static struct strbuf lfsblob_gitattr_sb = STRBUF_INIT;
+static struct hash_table *lfsblob_cache_hash = NULL;
 
 static const char import_commit_edit[] = "IMPORT_COMMIT_EDIT";
 static const char export_commit_edit[] = "EXPORT_COMMIT_EDIT";
@@ -206,6 +207,70 @@ static int helper_strbuf_getline(struct strbuf *sb)
 	if (sb->buf[sb->len-1] == '\n')
 		strbuf_setlen(sb, sb->len-1);
 
+	return 0;
+}
+
+struct lfsblob_cache_entry {
+		unsigned char sha1[20];
+		unsigned long size;
+		unsigned char sha256[git_SHA256_DIGEST_LENGTH];
+};
+
+static void init_lfsblob_cache()
+{
+	lfsblob_cache_hash = xmalloc(sizeof(struct hash_table));
+	init_hash(lfsblob_cache_hash);
+}
+
+static unsigned int hash_sha1(const unsigned char *sha1)
+{
+	unsigned int hash = 0x12375903;
+	int i;
+
+	for (i = 0; i < 20; i++) {
+		hash = hash*101 + sha1[i];
+	}
+	return hash;
+}
+
+int lfsblob_cache_lookup(const unsigned char *sha1, unsigned char *sha256, unsigned long *size)
+{
+	struct lfsblob_cache_entry *ent;
+	if (!lfsblob_cache_hash)
+		init_lfsblob_cache();
+
+	ent = lookup_hash(hash_sha1(sha1), lfsblob_cache_hash);
+	if (!ent)
+		return -1;
+
+	if (memcmp(sha1, ent->sha1, 20)) {
+		return -1;
+	}
+
+	memcpy(sha256, ent->sha256, git_SHA256_DIGEST_LENGTH);
+	*size = ent->size;
+	return 0;
+}
+
+int add_lfsblob_cache_entry(const unsigned char *sha1, const unsigned char *sha256, unsigned long size)
+{
+	unsigned int hash;
+	struct lfsblob_cache_entry *ent;
+
+	if (!lfsblob_cache_hash)
+		init_lfsblob_cache();
+
+	ent = xcalloc(1, sizeof(*ent));
+
+	hash = hash_sha1(sha1);
+	if (insert_hash(hash, ent, lfsblob_cache_hash)) {
+		free(ent);
+		return -1;
+	}
+
+	ent->size = size;
+	memcpy(ent->sha256, sha256, git_SHA256_DIGEST_LENGTH);
+	memcpy(ent->sha1, sha1, 20);
 	return 0;
 }
 
@@ -548,6 +613,7 @@ static int fast_export_revision_cb(void *ptr, void *data)
 		struct strbuf lfsblob_sb = STRBUF_INIT;
 		/*
 		 * FIXME: cache and do not read object from git to generate lfs pointer
+		 * sha1 -> sha256 size
 		 */
 		unsigned long size;
 		enum object_type type;
@@ -559,13 +625,17 @@ static int fast_export_revision_cb(void *ptr, void *data)
 			die("fast_export_revision: mark for loose-blob is not sha1");
 
 		get_sha1_hex(rev->mark, sha1);
-		buf = read_sha1_file(sha1, &type, &size);
-		if (!buf)
-			die("fast_export_revision: cannot read git lfs object by sha1: %s", rev->mark);
-		// export
-		write_sha256_lfs_file(buf, size, sha256);
-		tracef("written as git lfs file: %s %s - %s", rev->path, rev->revision, sha256_to_hex(sha256));
-		free(buf);
+		if (lfsblob_cache_lookup(sha1, sha256, &size)) {
+			buf = read_sha1_file(sha1, &type, &size);
+			if (!buf)
+				die("fast_export_revision: cannot read git lfs object by sha1: %s", rev->mark);
+			// export
+			write_sha256_lfs_file(buf, size, sha256);
+			tracef("written as git lfs file: %s %s - %s", rev->path, rev->revision, sha256_to_hex(sha256));
+			free(buf);
+
+			add_lfsblob_cache_entry(sha1, sha256, size);
+		}
 
 		strbuf_addf(&lfsblob_sb, "version https://git-lfs.github.com/spec/v1\n"
 								"oid sha256:%s\n"
